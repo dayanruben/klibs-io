@@ -1,6 +1,7 @@
 export enum GAEvent {
   REPORT_AN_ISSUE_CLICK = "report-an-issue-click",
   FAQ_CLICK = "faq-click",
+  AI_CLICK = "ai-click",
   LOGO_CLICK = "logo-click",
   SLACK_CLICK = "slack-click",
 
@@ -45,6 +46,7 @@ type NoParams = Record<string, never>;
 export type GAEventParams = {
   [GAEvent.REPORT_AN_ISSUE_CLICK]: NoParams;
   [GAEvent.FAQ_CLICK]: NoParams;
+  [GAEvent.AI_CLICK]: NoParams;
   [GAEvent.LOGO_CLICK]: NoParams;
   [GAEvent.SLACK_CLICK]: NoParams;
 
