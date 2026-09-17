@@ -32,5 +32,6 @@ jobs:
       - run: npx playwright install --with-deps
       - run: npm run test:visual
       - run: npx -y uiverify@1.4.2 upload --static-dir ./uiverify-archive
+        if: ${{ github.repository_owner != 'dayanruben' }}
         env:
           UIVERIFY_API_KEY: ${{ secrets.UIVERIFY_API_KEY }}
