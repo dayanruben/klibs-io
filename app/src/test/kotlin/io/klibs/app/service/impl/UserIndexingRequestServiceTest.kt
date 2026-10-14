@@ -13,12 +13,16 @@ import io.klibs.integration.maven.dto.MavenMetadata
 import io.klibs.integration.maven.service.impl.SonatypeCentralStaticDataProvider
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import org.mockito.kotlin.any
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
+import org.mockito.kotlin.never
+import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.test.context.bean.override.mockito.MockitoBean
@@ -99,6 +103,7 @@ class UserIndexingRequestServiceTest : BaseUnitWithDbLayerTest() {
         assertEquals("lib", saved.artifactId, "Wrong artifactId")
         assertEquals("1.0.0", saved.version, "Wrong version")
         assertEquals(ScraperType.CENTRAL_SONATYPE, saved.repo, "Wrong scraper type")
+        assertNotNull(saved.createdAt, "createdAt should be set")
     }
 
     @Test
@@ -115,7 +120,7 @@ class UserIndexingRequestServiceTest : BaseUnitWithDbLayerTest() {
             )
         )
 
-        uut.fulfillRequest(requireNotNull(issue.id))
+        uut.discoverAndSaveRequest(requireNotNull(issue.id))
 
         val saved = indexingRequestRepository.findByGroupIdAndArtifactIdAndVersion("com.example", "lib", "1.0.0")
         assertTrue(saved != null, "Index request should be saved")
@@ -211,25 +216,68 @@ class UserIndexingRequestServiceTest : BaseUnitWithDbLayerTest() {
         }
 
         assertEquals("Artifact com.example:lib:1.0.0 is banned", exception.reason)
+        assertNoMavenAccessOrQueuedRequests()
     }
 
     @Test
     @Sql(value = ["classpath:/sql/UserIndexingRequestServiceTest/insert-into-banned-packages.sql"])
     fun `should throw 400 when all discovered artifacts are banned by group`() {
-        whenever(centralSonatypeSearchClient.getMavenMetadata(eq("com.banned"), eq("libX")))
-            .thenReturn(
-                MavenMetadata(
-                    "com.banned",
-                    "libX",
-                    MavenMetadata.Versioning(versions = listOf("1.0.0", "2.0.0"))
-                )
-            )
-        whenever(centralSonatypeSearchClient.getKotlinToolingMetadata(any())).thenReturn(mock<KotlinToolingMetadataDelegateStubImpl>())
         val exception = assertThrows<UserRequestProcessingException> {
             fulfillRequest(groupId = "com.banned", artifactId = "libX", version = null)
         }
 
-        assertEquals("All artifacts from this request are already indexed, queued or banned", exception.reason)
+        assertEquals("Artifact com.banned:libX is banned", exception.reason)
+        assertNoMavenAccessOrQueuedRequests()
+    }
+
+    @Test
+    @Sql(value = ["classpath:/sql/UserIndexingRequestServiceTest/insert-into-banned-packages.sql"])
+    fun `should reject versionless exact ban before Maven access`() {
+        val exception = assertThrows<UserRequestProcessingException> {
+            fulfillRequest(version = null)
+        }
+
+        assertEquals("Artifact com.example:lib is banned", exception.reason)
+        assertNoMavenAccessOrQueuedRequests()
+    }
+
+    @Test
+    @Sql(value = ["classpath:/sql/UserIndexingRequestServiceTest/insert-into-banned-packages.sql"])
+    fun `should reject specific version in banned group before Maven access`() {
+        val exception = assertThrows<UserRequestProcessingException> {
+            fulfillRequest(groupId = "com.banned", artifactId = "libX")
+        }
+
+        assertEquals("Artifact com.banned:libX:1.0.0 is banned", exception.reason)
+        assertNoMavenAccessOrQueuedRequests()
+    }
+
+    @Test
+    @Sql(value = ["classpath:/sql/UserIndexingRequestServiceTest/insert-into-banned-packages.sql"])
+    fun `should queue allowed sibling for specific and versionless requests`() {
+        whenever(centralSonatypeSearchClient.getMavenMetadata("com.example", "sibling"))
+            .thenReturn(
+                MavenMetadata(
+                    "com.example", "sibling",
+                    MavenMetadata.Versioning(versions = listOf("1.0.0", "2.0.0"))
+                )
+            )
+        whenever(centralSonatypeSearchClient.getKotlinToolingMetadata(any()))
+            .thenReturn(mock<KotlinToolingMetadataDelegateStubImpl>())
+
+        fulfillRequest(artifactId = "sibling")
+        fulfillRequest(artifactId = "sibling", version = null, githubIssueNumber = 43)
+
+        val requests = indexingRequestRepository.findAll().toList()
+        assertEquals(setOf("1.0.0", "2.0.0"), requests.map { it.version }.toSet())
+        assertEquals(2, requests.size)
+        assertTrue(requests.all { it.groupId == "com.example" && it.artifactId == "sibling" })
+    }
+
+    private fun assertNoMavenAccessOrQueuedRequests() {
+        assertEquals(0L, indexingRequestRepository.count())
+        verify(centralSonatypeSearchClient, never()).getMavenMetadata(any(), any())
+        verify(centralSonatypeSearchClient, never()).getKotlinToolingMetadata(any())
     }
 
     @Test
@@ -277,6 +325,53 @@ class UserIndexingRequestServiceTest : BaseUnitWithDbLayerTest() {
             )
         )
 
-        uut.fulfillRequest(requireNotNull(issue.id))
+        uut.discoverAndSaveRequest(requireNotNull(issue.id))
+    }
+
+    // Tests for saveGAVRequest
+
+    @Test
+    fun `saveGAVRequest should save index request without checking against Maven Central`() {
+        uut.saveGAVRequest("com.example", "lib", "1.0.0")
+
+        verify(centralSonatypeSearchClient, never()).getKotlinToolingMetadata(any())
+
+        val saved = indexingRequestRepository.findByGroupIdAndArtifactIdAndVersion("com.example", "lib", "1.0.0")
+        assertTrue(saved != null, "Index request should be saved")
+        assertEquals("com.example", saved.groupId)
+        assertEquals("lib", saved.artifactId)
+        assertEquals("1.0.0", saved.version)
+        assertEquals(ScraperType.CENTRAL_SONATYPE, saved.repo)
+        assertNull(saved.userRequestIssue, "saveGAVRequest should not link to any issue")
+    }
+
+    @Test
+    @Sql(value = ["classpath:sql/UserIndexingRequestServiceTest/insert-into-banned-packages.sql"])
+    fun `saveGAVRequest should throw 400 when artifact is banned`() {
+        val exception = assertThrows<UserRequestProcessingException> {
+            uut.saveGAVRequest("com.example", "lib", "1.0.0")
+        }
+
+        assertEquals("Artifact com.example:lib:1.0.0 is banned", exception.reason)
+    }
+
+    @Test
+    @Sql(value = ["classpath:sql/UserIndexingRequestServiceTest/insert-into-package.sql"])
+    fun `saveGAVRequest should throw 400 when artifact is already indexed`() {
+        val exception = assertThrows<UserRequestProcessingException> {
+            uut.saveGAVRequest("com.example", "lib", "1.0.0")
+        }
+
+        assertEquals("Artifact com.example:lib:1.0.0 is already indexed or queued", exception.reason)
+    }
+
+    @Test
+    @Sql(value = ["classpath:sql/UserIndexingRequestServiceTest/insert-into-package-index-request.sql"])
+    fun `saveGAVRequest should throw 400 when artifact is already queued`() {
+        val exception = assertThrows<UserRequestProcessingException> {
+            uut.saveGAVRequest("com.example", "lib", "1.0.0")
+        }
+
+        assertEquals("Artifact com.example:lib:1.0.0 is already indexed or queued", exception.reason)
     }
 }

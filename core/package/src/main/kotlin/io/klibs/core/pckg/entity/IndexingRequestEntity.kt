@@ -38,8 +38,11 @@ data class IndexingRequestEntity(
     @Column(name = "version")
     val version: String?,
 
-    @Column(name = "released_ts")
-    val releasedAt: Instant?,
+    @Column(name = "created_ts")
+    val createdAt: Instant? = Instant.now(),
+
+    @Column(name = "next_attempt_ts", nullable = false)
+    val nextAttemptAt: Instant = Instant.EPOCH,
 
     @Enumerated(EnumType.STRING)
     @Column(name = "scraper_type", nullable = false)
@@ -69,4 +72,6 @@ data class IndexingRequestEntity(
     val userRequestIssue: UserRequestIssueEntity? = null,
 ) {
     val idNotNull: Long get() = requireNotNull(id)
+
+    fun gav(): String = "$groupId:$artifactId:$version"
 }

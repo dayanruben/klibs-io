@@ -225,6 +225,13 @@ class ProjectRepositoryJdbc(
             .getOrNull()
     }
 
+    override fun findIdsByScmRepoId(scmRepoId: Int): List<Int> {
+        return jdbcClient.sql("SELECT id FROM project WHERE scm_repo_id = :scmRepoId")
+            .param("scmRepoId", scmRepoId)
+            .query { rs, _ -> rs.getInt("id") }
+            .list()
+    }
+
     override fun findProjectsByPackages(
         groupId: String,
         artifactId: String?
@@ -369,7 +376,7 @@ class ProjectRepositoryJdbc(
                 SELECT producer.project_id,
                        COUNT(DISTINCT consumer.project_id)::int AS dependent_count
                 FROM package_dependency pd
-                JOIN package producer ON pd.dep_maven_artifact_id = producer.maven_artifact_id
+                JOIN package producer ON pd.dep_maven_coordinate_id = producer.maven_coordinate_id
                 JOIN package consumer ON consumer.id = pd.package_id
                 WHERE consumer.project_id IS DISTINCT FROM producer.project_id
                 GROUP BY producer.project_id
@@ -391,6 +398,7 @@ class ProjectRepositoryJdbc(
             FROM project p
             JOIN scm_repo sr ON sr.id = p.scm_repo_id
             JOIN scm_owner ON p.owner_id = scm_owner.id
+            WHERE NOT EXISTS (SELECT 1 FROM project_hidden ph WHERE ph.project_id = p.id)
             ORDER BY p.id
         """.trimIndent()
 

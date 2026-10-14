@@ -15,7 +15,7 @@ class GavCoordinatesDTOUtilsValidateTest {
             artifactId = "kotlinx-coroutines-core",
             version = "1.10.2"
         )
-        val error = MavenArtifactDTOUtils.validateGAVField(parsed)
+        val error = MavenCoordinateDTOUtils.validateGAVField(parsed)
 
         assertNull(error)
     }
@@ -27,7 +27,7 @@ class GavCoordinatesDTOUtilsValidateTest {
             artifactId = "kotlinx-coroutines-core",
             version = "1.10.2"
         )
-        val error = MavenArtifactDTOUtils.validateGAVField(parsed)
+        val error = MavenCoordinateDTOUtils.validateGAVField(parsed)
 
         assertNotNull(error)
         assertEquals(
@@ -43,11 +43,43 @@ class GavCoordinatesDTOUtilsValidateTest {
             artifactId = "kotlinx coroutines core",
             version = "1.10.2"
         )
-        val error = MavenArtifactDTOUtils.validateGAVField(parsed)
+        val error = MavenCoordinateDTOUtils.validateGAVField(parsed)
 
         assertNotNull(error)
         assertEquals(
             "Invalid Artifact ID format. Only alphanumeric characters, dots, underscores, and hyphens are allowed.",
+            error
+        )
+    }
+
+    @Test
+    fun `should return error when version contains forbidden characters`() {
+        val parsed = GavCoordinatesDTO(
+            groupId = "org.jetbrains.kotlinx",
+            artifactId = "kotlinx.coroutines.core",
+            version = "1.10.2?"
+        )
+        val error = MavenCoordinateDTOUtils.validateGAVField(parsed)
+
+        assertNotNull(error)
+        assertEquals(
+            "Invalid Version format. Whitespace, control characters, and the following characters are not allowed: /, \\, %, ?, #, &.",
+            error
+        )
+    }
+
+    @Test
+    fun `should return error when version contains spaces`() {
+        val parsed = GavCoordinatesDTO(
+            groupId = "org.jetbrains.kotlinx",
+            artifactId = "kotlinx.coroutines.core",
+            version = "1.10 2"
+        )
+        val error = MavenCoordinateDTOUtils.validateGAVField(parsed)
+
+        assertNotNull(error)
+        assertEquals(
+            "Invalid Version format. Whitespace, control characters, and the following characters are not allowed: /, \\, %, ?, #, &.",
             error
         )
     }
@@ -59,7 +91,7 @@ class GavCoordinatesDTOUtilsValidateTest {
             artifactId = "kotlinx-coroutines-core",
             version = "1.10.2-revision._$~=+:"
         )
-        val error = MavenArtifactDTOUtils.validateGAVField(parsed)
+        val error = MavenCoordinateDTOUtils.validateGAVField(parsed)
 
         assertNull(error)
     }
@@ -71,7 +103,7 @@ class GavCoordinatesDTOUtilsValidateTest {
             artifactId = "kotlinx-coroutines-core",
             version = null
         )
-        val error = MavenArtifactDTOUtils.validateGAVField(parsed)
+        val error = MavenCoordinateDTOUtils.validateGAVField(parsed)
 
         assertNull(error)
     }

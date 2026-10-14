@@ -62,6 +62,10 @@ class SecurityConfiguration(
                 // GitHub webhook endpoint authenticates incoming requests via X-Hub-Signature-256.
                 authorize(HttpMethod.POST, "/webhooks/github/**", permitAll)
 
+                // Notifications from the klibs-io-notifier Gradle plugin about artifacts newly published to Maven Central
+                authorize(HttpMethod.POST, "/notify/**", permitAll)
+                authorize(HttpMethod.OPTIONS, "/notify/**", permitAll)
+
                 // NOTE:
                 //  - /actuator/metrics and /actuator/prometheus are intentionally OPEN at the application level
                 //  - They are CLOSED at the nginx level
@@ -77,6 +81,7 @@ class SecurityConfiguration(
 
                 if (environment.matchesProfiles("prod")) {
                     authorize("/blacklist/**", hasRole("ADMIN"))
+                    authorize("/project-visibility/**", hasRole("ADMIN"))
                     // All other actuator endpoints require the "actuator" role in prod
                     // (the metrics/prometheus endpoints above remain permitAll for Prometheus scraping).
                     authorize("/actuator/**", hasRole("actuator"))
@@ -85,14 +90,17 @@ class SecurityConfiguration(
                     authorize(HttpMethod.PATCH, "/content/**", hasRole("content-manager"))
                     authorize(HttpMethod.POST, "/tags/allowed/**", hasRole("ADMIN"))
                     authorize(HttpMethod.DELETE, "/tags/allowed/**", hasRole("ADMIN"))
+                    authorize("/package-index-request/**", hasRole("ADMIN"))
                 } else {
                     authorize("/blacklist/**", permitAll)
+                    authorize("/project-visibility/**", permitAll)
                     authorize("/actuator/**", permitAll)
                     authorize("/api-docs/**", permitAll)
                     authorize(HttpMethod.PATCH, "/content/**", permitAll)
                     authorize("/package-description/**", permitAll)
                     authorize(HttpMethod.POST, "/tags/allowed/**", permitAll)
                     authorize(HttpMethod.DELETE, "/tags/allowed/**", permitAll)
+                    authorize("/package-index-request/**", permitAll)
                 }
 
                 authorize(anyRequest, authenticated)

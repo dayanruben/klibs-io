@@ -1,6 +1,5 @@
 package io.klibs.app.indexing
 
-import io.klibs.app.util.BackoffProvider
 import io.klibs.core.owner.ScmOwnerType
 import io.klibs.core.project.ProjectEntity
 import io.klibs.core.project.ProjectService
@@ -31,8 +30,8 @@ class GitHubIndexingServiceTopicsTest {
     private val projectTagRepository: ProjectTagRepository = mock()
     private val readmeContentBuilder: ReadmeContentBuilder = mock()
     private val allowedProjectTagsRepository: AllowedProjectTagsRepository = mock()
-    private val ownerBackoffProvider: BackoffProvider = mock()
     private val projectService: ProjectService = mock()
+    private val unreachableRepoHidingService: UnreachableRepoHidingService = mock()
     private val readmeReprocessPeriodDays: Long = 7
 
     private fun uut() = GitHubIndexingService(
@@ -43,8 +42,8 @@ class GitHubIndexingServiceTopicsTest {
         readmeService = readmeService,
         readmeContentBuilder = readmeContentBuilder,
         projectRepository = projectRepository,
-        ownerBackoffProvider = ownerBackoffProvider,
         projectService = projectService,
+        unreachableRepoHidingService = unreachableRepoHidingService,
         readmeReprocessPeriodDays = readmeReprocessPeriodDays
     )
 

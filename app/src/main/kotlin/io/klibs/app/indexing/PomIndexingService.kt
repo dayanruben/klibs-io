@@ -3,11 +3,11 @@ package io.klibs.app.indexing
 import io.klibs.app.util.ANDROIDX_OWNER_AND_GITHUB_REPOSITORY
 import io.klibs.app.util.isAndroidxProject
 import io.klibs.app.util.parseGitHubLink
-import io.klibs.core.pckg.dto.MavenCoordinatesDTO
+import io.klibs.core.pckg.dto.MavenCoordinateDTO
 import io.klibs.core.pckg.model.PackageDeveloper
 import io.klibs.core.pckg.model.PackageLicense
 import io.klibs.core.pckg.repository.PackageRepository
-import io.klibs.core.pckg.service.MavenArtifactService
+import io.klibs.core.pckg.service.MavenCoordinateService
 import io.klibs.integration.maven.service.MavenPom
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
@@ -25,7 +25,7 @@ import org.springframework.transaction.annotation.Transactional
 @Service
 class PomIndexingService(
     private val packageRepository: PackageRepository,
-    private val mavenArtifactService: MavenArtifactService,
+    private val mavenCoordinateService: MavenCoordinateService,
 ) {
 
     /**
@@ -40,7 +40,7 @@ class PomIndexingService(
     }
 
     fun extractDevelopers(pom: MavenPom): List<PackageDeveloper> {
-        val developers = pom.developers ?: return emptyList()
+        val developers = pom.developers
         return developers.mapNotNull { dev ->
             val name = (dev.name ?: dev.organization)
                 ?.takeIf { it.isNotBlank() }
@@ -54,7 +54,7 @@ class PomIndexingService(
     }
 
     fun extractLicenses(pom: MavenPom): List<PackageLicense> {
-        val licenses = pom.licenses ?: return emptyList()
+        val licenses = pom.licenses
         return licenses.mapNotNull { license ->
             val name = license.name?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
             PackageLicense(
@@ -79,23 +79,23 @@ class PomIndexingService(
         }
 
         if (dependencies.isNotEmpty()) {
-            val artifactsByCoords = mavenArtifactService.resolveOrCreateAll(dependencies)
-            packageEntity.dependencies.addAll(artifactsByCoords.values.map { it.toEntityRef() })
+            val resolvedCoordinates = mavenCoordinateService.resolveOrCreateAll(dependencies)
+            packageEntity.dependencies.addAll(resolvedCoordinates.map { it.toEntityRef() })
         }
 
         packageRepository.save(packageEntity)
         logger.debug("Saved {} dependencies for package id={}", packageEntity.dependencies.size, packageId)
     }
 
-    private fun MavenPom.extractDependencies(): Set<MavenCoordinatesDTO> =
+    private fun MavenPom.extractDependencies(): Set<MavenCoordinateDTO> =
         dependencies
-            ?.asSequence()
+            .asSequence()
             ?.mapNotNull { dep ->
                 val group = dep.groupId?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
                 val artifact = dep.artifactId?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
                 val version = dep.version?.takeIf { it.isNotBlank() && !it.contains("\${") }
                     ?: return@mapNotNull null
-                MavenCoordinatesDTO(groupId = group, artifactId = artifact, version = version)
+                MavenCoordinateDTO(groupId = group, artifactId = artifact, version = version)
             }
             ?.filterNot { coords -> groupId == coords.groupId && artifactId == coords.artifactId }
             ?.toSet()

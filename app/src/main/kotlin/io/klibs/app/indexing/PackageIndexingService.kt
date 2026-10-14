@@ -2,17 +2,20 @@ package io.klibs.app.indexing
 
 import io.klibs.app.configuration.properties.IndexingConfigurationProperties
 import io.klibs.app.indexing.discoverer.PackageDiscoverer
+import io.klibs.app.exceptions.PackageIndexingKnownException
 import io.klibs.app.service.UserRequestReportWriter
 import io.klibs.app.util.normalizeGitHubLink
 import io.klibs.app.util.toIndexRequest
-import io.klibs.core.pckg.dto.MavenCoordinatesDTO
+import io.klibs.core.pckg.dto.MavenCoordinateDTO
 import io.klibs.core.pckg.dto.PackageDTO
 import io.klibs.core.pckg.entity.IndexingRequestEntity
 import io.klibs.core.pckg.enums.IndexingRequestStatus
+import io.klibs.core.pckg.enums.PackageIndexingErrorType
 import io.klibs.core.pckg.enums.VersionType
+import io.klibs.core.pckg.repository.BlacklistRepository
 import io.klibs.core.pckg.repository.IndexingRequestRepository
 import io.klibs.core.pckg.repository.PackageRepository
-import io.klibs.core.pckg.service.MavenArtifactService
+import io.klibs.core.pckg.service.MavenCoordinateService
 import io.klibs.core.pckg.service.PackageService
 import io.klibs.core.project.ProjectEntity
 import io.klibs.core.scm.repository.ScmRepositoryEntity
@@ -53,7 +56,9 @@ class PackageIndexingService(
     private val userRequestReportWriter: UserRequestReportWriter,
     private val packageService: PackageService,
     private val packageRepository: PackageRepository,
-    private val mavenArtifactService: MavenArtifactService,
+    private val blacklistRepository: BlacklistRepository,
+    private val mavenCoordinateService: MavenCoordinateService,
+    private val errorHandler: PackageIndexingErrorHandler,
     private val indexingConfigurationProperties: IndexingConfigurationProperties,
     private val selfProvider: ObjectProvider<PackageIndexingService>
 ) {
@@ -82,8 +87,7 @@ class PackageIndexingService(
                                     if (newArtifacts.isNotEmpty()) {
                                         val indexRequests = newArtifacts.map { it.toIndexRequest() }
                                         val insertedRequests = indexingRequestRepository.saveAll(indexRequests).count()
-                                        val removedRepeating = indexingRequestRepository.removeRepeating()
-                                        logger.debug("Queued up ${insertedRequests - removedRepeating} newArtifacts")
+                                        logger.debug("Queued up $insertedRequests newArtifacts")
                                     }
                                 }
                         }
@@ -106,7 +110,8 @@ class PackageIndexingService(
      * @return true if a request was processed, false if the queue is empty or we are rate limited.
      */
     fun processPackageQueue(): Boolean {
-        val indexRequest = indexingRequestRepository.findFirstForIndexing(indexingConfigurationProperties.retry.maxAttempts)
+        val indexRequest =
+            indexingRequestRepository.findFirstForIndexing(indexingConfigurationProperties.retry.maxAttempts)
         if (indexRequest == null) {
             logger.info("The package index queue is empty")
             return false
@@ -115,8 +120,12 @@ class PackageIndexingService(
         var outcome = Outcome.FAILED
         var errorMessage: String? = null
         try {
-            selfProvider.getObject().processRequest(requestId)
-            outcome = Outcome.SUCCESS
+            if (blacklistRepository.checkPackageBanned(indexRequest.groupId, indexRequest.artifactId)) {
+                errorMessage = "Artifact ${indexRequest.groupId}:${indexRequest.artifactId} is banned"
+                outcome = Outcome.BANNED
+            } else {
+                outcome = processWithKnownErrorHandling(indexRequest)
+            }
         } catch (e: MavenRateLimitedException) {
             outcome = Outcome.RATE_LIMITED
             logger.warn("Stopping the indexing queue, request id=$requestId stays pending: ${e.message}")
@@ -126,18 +135,24 @@ class PackageIndexingService(
         } finally {
             try {
                 when (outcome) {
+                    Outcome.BANNED -> selfProvider.getObject().discardBannedRequest(requestId, errorMessage)
                     Outcome.SUCCESS -> {
                         userRequestReportWriter.saveSuccessReport(requestId)
                         indexingRequestRepository.deleteById(requestId)
                     }
 
                     Outcome.FAILED -> {
-                        indexingRequestRepository.markAsFailed(requestId, errorMessage)
+                        indexingRequestRepository.markAsFailed(
+                            requestId,
+                            indexingConfigurationProperties.retry.maxAttempts,
+                            getNextAttemptTs(indexRequest.failedAttempts + 1),
+                            errorMessage
+                        )
                         userRequestReportWriter.saveFailureReportIfTerminal(requestId, errorMessage)
                     }
 
-                    // Leave the request untouched so a rate limit does not burn a retry attempt.
-                    Outcome.RATE_LIMITED -> Unit
+                    Outcome.RATE_LIMITED, Outcome.HANDLED_ERROR ->
+                        indexingRequestRepository.updateStatus(requestId, IndexingRequestStatus.PENDING)
                 }
             } catch (ex: Exception) {
                 logger.error("Error during finalizing index request with id=$requestId: ${ex.message}", ex)
@@ -146,12 +161,31 @@ class PackageIndexingService(
         return outcome != Outcome.RATE_LIMITED
     }
 
-    private enum class Outcome { SUCCESS, FAILED, RATE_LIMITED }
+    private enum class Outcome { SUCCESS, FAILED, RATE_LIMITED, BANNED, HANDLED_ERROR }
+
+    private fun processWithKnownErrorHandling(indexRequest: IndexingRequestEntity): Outcome {
+        return try {
+            selfProvider.getObject().processRequest(indexRequest)
+            Outcome.SUCCESS
+        } catch (error: PackageIndexingKnownException) {
+            val isLastAttempt = indexRequest.failedAttempts + 1 >= indexingConfigurationProperties.retry.maxAttempts
+            if (error.errorType.retryable && !isLastAttempt) throw error
+            errorHandler.handle(indexRequest.idNotNull, error)
+            Outcome.HANDLED_ERROR
+        }
+    }
 
     @Transactional
-    internal fun processRequest(idToProcess: Long) {
+    internal fun discardBannedRequest(requestId: Long, errorMessage: String?) {
+        logger.warn("Discarding banned request with id=$requestId. ${errorMessage ?: ""}")
+        userRequestReportWriter.saveFailureReport(requestId, errorMessage)
+        indexingRequestRepository.deleteById(requestId)
+    }
+
+    @Transactional
+    internal fun processRequest(indexRequestToProcess: IndexingRequestEntity) {
         val indexRequest =
-            indexingRequestRepository.updateStatus(idToProcess, IndexingRequestStatus.IN_PROCESS) ?: return
+            indexingRequestRepository.updateStatus(indexRequestToProcess.idNotNull, IndexingRequestStatus.IN_PROCESS) ?: return
 
         val isIndividualArtifact = indexRequest.version != null
         if (isIndividualArtifact) {
@@ -159,7 +193,7 @@ class PackageIndexingService(
         } else {
             logger.error("Multi-version indexing requests are not supported")
         }
-        logger.debug("Processed an indexing request for {}", indexRequest)
+        logger.debug("Processed an indexing request for {}", indexRequest.gav())
     }
 
     private fun indexArtifact(indexRequest: IndexingRequestEntity) {
@@ -171,12 +205,22 @@ class PackageIndexingService(
 
         val (pom, releasedAt) =
             provider.getPomWithReleaseDate(mavenArtifact)
-                ?: error("Unable to find the .pom for ${provider.getPomUrl(mavenArtifact)}")
+                ?: throw PackageIndexingKnownException(
+                    errorType = PackageIndexingErrorType.MISSING_POM,
+                    coordinates = MavenCoordinateDTO(
+                        mavenArtifact.groupId, mavenArtifact.artifactId, mavenArtifact.version,
+                    ),
+                    scraperType = mavenArtifact.scraperType,
+                    scmUrl = null,
+                    message = "Missing POM for ${mavenArtifact.groupId}:${mavenArtifact.artifactId}:${mavenArtifact.version}",
+                )
 
-        if (mavenArtifact.releasedAt == null) {
-            mavenArtifact = mavenArtifact.copy(releasedAt = releasedAt)
-            logger.trace("Set releasedAt for {}", mavenArtifact)
-        }
+        mavenArtifact = mavenArtifact.copy(releasedAt = releasedAt)
+        logger.trace("Set releasedAt for {}", mavenArtifact)
+
+        val mavenCoordinates = MavenCoordinateDTO(pom.groupId, pom.artifactId, pom.version)
+        val toolingMetadata = getKotlinToolingMetadata(mavenArtifact, provider, mavenCoordinates, pom)
+
 
         logger.trace("Indexing GitHub info of {}", mavenArtifact)
         val gitHubRepoEntity = indexGitHubInfoIfPresent(pom)
@@ -189,10 +233,6 @@ class PackageIndexingService(
             )
         }
 
-        logger.trace("Getting tooling metadata for {}", mavenArtifact)
-        val toolingMetadata = provider.getKotlinToolingMetadata(mavenArtifact)
-            ?: error("Unable to find tooling metadata for $mavenArtifact")
-
         logger.trace("Persisting the package for {}", indexRequest)
         val packageDto = constructPackage(mavenArtifact, pom, toolingMetadata, project, indexRequest.reindex)
         val savedPackageId = if (indexRequest.reindex) {
@@ -200,14 +240,29 @@ class PackageIndexingService(
                 ?: error("Unable to update a non-existing artifact: $mavenArtifact")
             updated.id
         } else {
-            val mavenArtifactDto = mavenArtifactService.resolveOrCreate(
-                MavenCoordinatesDTO(pom.groupId, pom.artifactId, pom.version)
-            )
-            packageRepository.save(packageDto.toEntity(mavenArtifactDto)).id
+            val mavenCoordinateDto = mavenCoordinateService.resolveOrCreate(mavenCoordinates)
+            packageRepository.save(packageDto.toEntity(mavenCoordinateDto)).id
         }
 
         logger.trace("Extracting dependencies for {}", indexRequest)
         pomIndexingService.indexDependencies(pom, requireNotNull(savedPackageId), indexRequest.reindex)
+    }
+
+    private fun getKotlinToolingMetadata(
+        mavenArtifact: MavenArtifact,
+        provider: MavenStaticDataProvider,
+        mavenCoordinates: MavenCoordinateDTO,
+        pom: MavenPom
+    ): KotlinToolingMetadataDelegate {
+        logger.trace("Getting tooling metadata for {}", mavenArtifact)
+        val toolingMetadata = provider.getKotlinToolingMetadata(mavenArtifact)
+            ?: throw PackageIndexingKnownException(
+                errorType = PackageIndexingErrorType.MISSING_TOOLING_METADATA,
+                coordinates = mavenCoordinates,
+                scraperType = mavenArtifact.scraperType,
+                scmUrl = pom.scm?.url?.let { normalizeGitHubLink(it) },
+            )
+        return toolingMetadata
     }
 
     private fun IndexingRequestEntity.getMavenArtifact(): MavenArtifact {
@@ -220,7 +275,6 @@ class PackageIndexingService(
             scraperType = requireNotNull(this.repo) {
                 "Request's repoId is set to null, unable to convert to MavenArtifact: $this"
             },
-            releasedAt = this.releasedAt
         )
     }
 
@@ -294,7 +348,11 @@ class PackageIndexingService(
             Duration.between(previousGeneratedAt, Instant.now()) < indexingConfigurationProperties.description.regenTtl
         ) {
             logger.info("Skipping regeneration for $coordinates; previous description generated within TTL")
-            return ResolvedDescription(latestSavedVersion.description, wasGenerated = true, generatedAt = previousGeneratedAt)
+            return ResolvedDescription(
+                latestSavedVersion.description,
+                wasGenerated = true,
+                generatedAt = previousGeneratedAt
+            )
         }
 
         return try {
@@ -317,6 +375,18 @@ class PackageIndexingService(
         val wasGenerated: Boolean,
         val generatedAt: Instant?
     )
+
+    private fun getNextAttemptTs(
+        failedAttempts: Int
+    ): Instant? {
+        // Indexing runs every 4h, so to make sure retry will be triggered when expected, the lock duration is always set to (expected_duration - 1h)
+        return when (failedAttempts) {
+            1 -> Instant.now().plus(Duration.ofHours(3))    // 4h
+            2 -> Instant.now().plus(Duration.ofHours(11))   // 12h
+            3 -> Instant.now().plus(Duration.ofHours(24 * 4 - 1)) // 4 days
+            else -> null
+        }
+    }
 
     private companion object {
         private val logger = LoggerFactory.getLogger(PackageIndexingService::class.java)

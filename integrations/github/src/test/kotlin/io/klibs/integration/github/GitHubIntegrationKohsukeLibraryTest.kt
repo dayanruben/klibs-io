@@ -5,8 +5,9 @@ import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import io.klibs.integration.github.configuration.GitHubIntegrationConfiguration
 import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
+import java.io.IOException
 import java.security.KeyPairGenerator
-import java.util.*
+import java.util.Base64
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -17,7 +18,15 @@ import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
+import org.kohsuke.github.GitHub
+import org.kohsuke.github.GitHubAbuseLimitHandler
+import org.kohsuke.github.GitHubBuilder
+import org.kohsuke.github.GitHubRateLimitHandler
 import org.kohsuke.github.HttpException
+import org.kohsuke.github.authorization.AuthorizationProvider
+import org.kohsuke.github.extras.okhttp3.OkHttpGitHubConnector
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.TestConfiguration
 import org.springframework.context.annotation.Bean
@@ -45,6 +54,7 @@ class GitHubIntegrationKohsukeLibraryTest {
         requestRecorder.authorizations.clear()
         requestRecorder.authenticatedError = IP_ALLOW_LIST_MESSAGE
         requestRecorder.anonymousNotFound = false
+        requestRecorder.repositoryResponseCode = 404
     }
 
     // Some organizations use a whitelist of IP's restrict authorised access to their public resources.
@@ -79,6 +89,33 @@ class GitHubIntegrationKohsukeLibraryTest {
         assertEquals(listOf(AUTHORIZATION, null), requestRecorder.authorizations)
     }
 
+    @Test
+    fun `repository not found returns null for every lookup method`() {
+        assertNull(uut.getRepository(12345678L))
+        assertNull(uut.getRepository("JetBrains", "missing"))
+        assertNull(uut.getForkParentFullName("JetBrains", "missing"))
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = [401, 403, 429, 500, 503])
+    fun `repository API failures propagate instead of reporting a missing repository`(status: Int) {
+        requestRecorder.repositoryResponseCode = status
+
+        assertFailsWith<IOException> { uut.getRepository(12345678L) }
+        assertFailsWith<IOException> { uut.getRepository("JetBrains", "missing") }
+        assertFailsWith<IOException> { uut.getForkParentFullName("JetBrains", "missing") }
+    }
+
+    @Test
+    fun `fork repository exposes its parent`() {
+        assertEquals("cashapp/zipline", uut.getForkParentFullName("suspect", "zipline"))
+    }
+
+    @Test
+    fun `non-fork repository has no parent`() {
+        assertNull(uut.getForkParentFullName("cashapp", "zipline"))
+    }
+
     @TestConfiguration
     class SpringTestConfiguration {
 
@@ -91,6 +128,16 @@ class GitHubIntegrationKohsukeLibraryTest {
         @Bean
         fun requestRecorder(): RequestRecorder = RequestRecorder()
 
+        @Bean("githubApi")
+        @Primary
+        fun testGithubApi(okHttpClient: OkHttpClient, authorizationProvider: AuthorizationProvider): GitHub =
+            GitHubBuilder()
+                .withConnector(OkHttpGitHubConnector(okHttpClient))
+                .withAuthorizationProvider(authorizationProvider)
+                .withRateLimitHandler(GitHubRateLimitHandler.FAIL)
+                .withAbuseLimitHandler(GitHubAbuseLimitHandler.FAIL)
+                .build()
+
         @Bean
         @Primary
         fun testOkHttpClient(requestRecorder: RequestRecorder): OkHttpClient = OkHttpClient.Builder()
@@ -102,6 +149,15 @@ class GitHubIntegrationKohsukeLibraryTest {
                     "/app/installations/$INSTALLATION_ID" -> Triple(200, "OK", INSTALLATION_RESPONSE)
                     "/app/installations/$INSTALLATION_ID/access_tokens" -> Triple(201, "Created", TOKEN_RESPONSE)
                     "/rate_limit" -> Triple(200, "OK", RATE_LIMIT_RESPONSE)
+                    "/repositories/12345678", "/repos/JetBrains/missing" -> Triple(
+                        requestRecorder.repositoryResponseCode,
+                        "Repository lookup failed",
+                        """{"message":"Repository lookup failed"}"""
+                    )
+
+                    "/repos/suspect/zipline" -> Triple(200, "OK", FORK_REPOSITORY_RESPONSE)
+                    "/repos/cashapp/zipline" -> Triple(200, "OK", ORIGINAL_REPOSITORY_RESPONSE)
+
                     "/users/JetBrains" -> {
                         requestRecorder.authorizations += authorization
                         if (authorization == AUTHORIZATION) {
@@ -112,6 +168,7 @@ class GitHubIntegrationKohsukeLibraryTest {
                             Triple(200, "OK", USER_RESPONSE)
                         }
                     }
+
                     else -> error("Unexpected GitHub request: ${chain.request().method} $path")
                 }
                 Response.Builder()
@@ -129,6 +186,7 @@ class GitHubIntegrationKohsukeLibraryTest {
         val authorizations = mutableListOf<String?>()
         var authenticatedError: String = IP_ALLOW_LIST_MESSAGE
         var anonymousNotFound: Boolean = false
+        var repositoryResponseCode: Int = 404
     }
 
     private companion object {
@@ -136,9 +194,13 @@ class GitHubIntegrationKohsukeLibraryTest {
         const val AUTHORIZATION = "token installation-token"
         const val IP_ALLOW_LIST_MESSAGE =
             "Although you appear to have the correct authorization credentials, the `JetBrains` organization has " +
-                "an IP allow list enabled, and your IP address is not permitted to access this resource."
+                    "an IP allow list enabled, and your IP address is not permitted to access this resource."
         const val NOT_FOUND_RESPONSE =
             """{"message":"Not Found","documentation_url":"https://docs.github.com/rest","status":"404"}"""
+        const val ORIGINAL_REPOSITORY_RESPONSE =
+            """{"id":1,"name":"zipline","full_name":"cashapp/zipline","owner":{"login":"cashapp"},"fork":false,"created_at":"2020-01-01T00:00:00Z","pushed_at":"2026-01-01T00:00:00Z","default_branch":"trunk","has_pages":false,"has_issues":true,"has_wiki":false,"archived":false,"stargazers_count":10,"open_issues_count":1}"""
+        const val FORK_REPOSITORY_RESPONSE =
+            """{"id":2,"name":"zipline","full_name":"suspect/zipline","owner":{"login":"suspect"},"fork":true,"parent":{"id":1,"name":"zipline","full_name":"cashapp/zipline"},"created_at":"2024-01-01T00:00:00Z","pushed_at":"2026-01-01T00:00:00Z","default_branch":"trunk","has_pages":false,"has_issues":false,"has_wiki":false,"archived":false,"stargazers_count":0,"open_issues_count":0}"""
         const val USER_RESPONSE =
             """{"id":12345678,"login":"JetBrains","type":"Organization","name":"JetBrains"}"""
         const val APP_RESPONSE =

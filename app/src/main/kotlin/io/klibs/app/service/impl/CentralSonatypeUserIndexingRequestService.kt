@@ -1,6 +1,5 @@
 package io.klibs.app.service.impl
 
-import io.klibs.app.configuration.properties.IndexingConfigurationProperties
 import io.klibs.app.exceptions.UserRequestProcessingException
 import io.klibs.app.service.UserIndexingRequestService
 import io.klibs.app.util.toIndexRequest
@@ -8,13 +7,12 @@ import io.klibs.core.pckg.entity.UserRequestIssueEntity
 import io.klibs.core.pckg.repository.IndexingRequestRepository
 import io.klibs.core.pckg.repository.PackageRepository
 import io.klibs.core.pckg.repository.UserRequestIssueRepository
-import io.klibs.core.project.blacklist.BlacklistRepository
+import io.klibs.core.pckg.repository.BlacklistRepository
 import io.klibs.integration.maven.MavenArtifact
 import io.klibs.integration.maven.service.impl.SonatypeCentralStaticDataProvider
 import java.util.UUID
 import kotlin.jvm.optionals.getOrNull
 import org.slf4j.LoggerFactory
-import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 
@@ -29,7 +27,7 @@ class CentralSonatypeUserIndexingRequestService(
 ) : UserIndexingRequestService {
 
     @Transactional
-    override fun fulfillRequest(userRequestId: UUID) {
+    override fun discoverAndSaveRequest(userRequestId: UUID) {
         val userRequestIssue = userRequestIssueRepository.findById(userRequestId).getOrNull()
             ?: throw UserRequestProcessingException("User request not found")
 
@@ -41,7 +39,13 @@ class CentralSonatypeUserIndexingRequestService(
         )
     }
 
-    private fun fulfillRequest(
+    @Transactional
+    override fun saveGAVRequest(groupId: String, artifactId: String, version: String) {
+        val artifact = newMavenArtifact(groupId, artifactId, version)
+        saveUserRequests(listOf(artifact), issue = null)
+    }
+
+    internal fun fulfillRequest(
         groupId: String,
         artifactId: String,
         version: String?,
@@ -60,10 +64,13 @@ class CentralSonatypeUserIndexingRequestService(
             return listOf(resolveSpecificVersion(groupId, artifactId, version))
         }
 
+        if (isBanned(groupId, artifactId)) {
+            throw UserRequestProcessingException("Artifact $groupId:$artifactId is banned")
+        }
+
         val foundPackages = searchForPackages(groupId, artifactId)
 
         val artifactsToSave = foundPackages
-            .filterNot { isBanned(it) }
             .filterNot { isAlreadyIndexedOrQueued(it) }
 
         if (artifactsToSave.isEmpty()) throw UserRequestProcessingException("All artifacts from this request are already indexed, queued or banned")
@@ -90,9 +97,7 @@ class CentralSonatypeUserIndexingRequestService(
     }
 
     private fun resolveSpecificVersion(groupId: String, artifactId: String, version: String): MavenArtifact {
-        val artifact = MavenArtifact(groupId, artifactId, version, centralSearchClient.scraperType)
-        if (isBanned(artifact)) throw UserRequestProcessingException("Artifact $groupId:$artifactId:$version is banned")
-        if (isAlreadyIndexedOrQueued(artifact)) throw UserRequestProcessingException("Artifact $groupId:$artifactId:$version is already indexed or queued")
+        val artifact = newMavenArtifact(groupId, artifactId, version)
 
         centralSearchClient.getKotlinToolingMetadata(artifact)
             ?: throw UserRequestProcessingException(
@@ -103,9 +108,16 @@ class CentralSonatypeUserIndexingRequestService(
         return artifact
     }
 
-    private fun isBanned(artifact: MavenArtifact): Boolean =
-        blacklistRepository.checkPackageBanned(artifact.groupId, artifact.artifactId).also { banned ->
-            if (banned) logger.debug("Banned: ${artifact.groupId}:${artifact.artifactId}, skipping")
+    private fun newMavenArtifact(groupId: String, artifactId: String, version: String): MavenArtifact {
+        val artifact = MavenArtifact(groupId, artifactId, version, centralSearchClient.scraperType)
+        if (isBanned(groupId, artifactId)) throw UserRequestProcessingException("Artifact $groupId:$artifactId:$version is banned")
+        if (isAlreadyIndexedOrQueued(artifact)) throw UserRequestProcessingException("Artifact $groupId:$artifactId:$version is already indexed or queued")
+        return artifact
+    }
+
+    private fun isBanned(groupId: String, artifactId: String): Boolean =
+        blacklistRepository.checkPackageBanned(groupId, artifactId).also { banned ->
+            if (banned) logger.debug("Banned: ${groupId}:${artifactId}, skipping")
         }
 
     private fun isAlreadyIndexedOrQueued(artifact: MavenArtifact): Boolean =

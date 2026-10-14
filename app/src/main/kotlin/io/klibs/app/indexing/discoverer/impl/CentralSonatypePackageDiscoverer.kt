@@ -1,6 +1,7 @@
 package io.klibs.app.indexing.discoverer.impl
 
 import io.klibs.app.configuration.properties.IndexingConfigurationProperties
+import io.klibs.core.pckg.repository.BlacklistRepository
 import io.klibs.core.pckg.repository.PackageRepository
 import io.klibs.integration.maven.repository.MavenCentralLogRepository
 import io.klibs.integration.maven.service.MavenCentralScraper
@@ -20,12 +21,14 @@ class CentralSonatypePackageDiscoverer(
     mavenCentralLogRepository: MavenCentralLogRepository,
     packageRepository: PackageRepository,
     sonatypeCentralStaticDataProvider: BaseMavenCentralStaticDataProvider,
+    blacklistRepository: BlacklistRepository,
 ) : BaseMavenCentralPackageDiscoverer(
     mavenIndexDownloadingService = mavenIndexDownloadingService,
     mavenIndexScannerService = centralSonatypeMavenIndexScannerService,
     mavenCentralScraper = centralSonatypeScraper,
     mavenCentralLogRepository = mavenCentralLogRepository,
     packageRepository = packageRepository,
+    blacklistRepository = blacklistRepository,
     fetchRemoteIndexTimestamp = sonatypeCentralStaticDataProvider::fetchRemoteIndexTimestamp,
     sourceName = "Central sonatype",
 )

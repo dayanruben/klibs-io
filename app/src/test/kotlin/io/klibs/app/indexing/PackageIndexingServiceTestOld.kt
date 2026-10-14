@@ -6,8 +6,9 @@ import io.klibs.app.service.UserRequestReportWriter
 import io.klibs.core.pckg.entity.IndexingRequestEntity
 import io.klibs.core.pckg.repository.IndexingRequestRepository
 import io.klibs.core.pckg.repository.PackageRepository
-import io.klibs.core.pckg.service.MavenArtifactService
+import io.klibs.core.pckg.service.MavenCoordinateService
 import io.klibs.core.pckg.service.PackageService
+import io.klibs.core.pckg.service.RejectedMavenCoordinatesService
 import io.klibs.integration.ai.PackageDescriptionGenerator
 import io.klibs.integration.maven.MavenArtifact
 import io.klibs.integration.maven.ScraperType
@@ -42,7 +43,8 @@ class PackageIndexingServiceTestOld {
     private val userRequestReportWriter: UserRequestReportWriter = mock()
     private val packageService: PackageService = mock()
     private val packageRepository: PackageRepository = mock()
-    private val mavenArtifactService: MavenArtifactService = mock()
+    private val mavenCoordinateService: MavenCoordinateService = mock()
+    private val rejectedMavenCoordinatesService: RejectedMavenCoordinatesService = mock()
     private val transactionTemplate: TransactionTemplate = mock()
     private val selfProvider: ObjectProvider<PackageIndexingService> = mock()
 
@@ -64,7 +66,9 @@ class PackageIndexingServiceTestOld {
             userRequestReportWriter,
             packageService,
             packageRepository,
-            mavenArtifactService,
+            mock(),
+            mavenCoordinateService,
+            mock<PackageIndexingErrorHandler>(),
             IndexingConfigurationProperties(),
             selfProvider
         )
@@ -77,7 +81,6 @@ class PackageIndexingServiceTestOld {
             artifactId = "kotlin-stdlib",
             version = "1.9.0",
             scraperType = ScraperType.SEARCH_MAVEN,
-            releasedAt = Instant.now()
         )
 
         whenever(discoverer.discover(any())).thenAnswer { invocation ->
@@ -91,10 +94,8 @@ class PackageIndexingServiceTestOld {
             groupId = artifact.groupId,
             artifactId = artifact.artifactId,
             version = artifact.version,
-            releasedAt = artifact.releasedAt,
             repo = artifact.scraperType
         )))
-        whenever(indexingRequestRepository.removeRepeating()).thenReturn(0)
 
         service.indexNewPackages()
 
@@ -105,7 +106,6 @@ class PackageIndexingServiceTestOld {
                     list[0].version == artifact.version &&
                     list[0].repo == artifact.scraperType
         })
-        verify(indexingRequestRepository).removeRepeating()
     }
 
     private fun provider(scraperType: ScraperType): MavenStaticDataProvider =

@@ -44,7 +44,6 @@ abstract class BaseMavenStaticDataProvider(
     private val objectMapper: ObjectMapper,
     private val clientTransport: Transport = Java11HttpClientTransport(),
     private val clock: Clock = Clock.System,
-    private val lastModifiedHeader: String,
 ) : MavenStaticDataProvider {
 
     private val mavenXpp3Reader = MavenXpp3Reader()
@@ -58,7 +57,7 @@ abstract class BaseMavenStaticDataProvider(
         return executeFetch(pomFileUrl) { response ->
             val pom =
                 mavenXpp3Reader.read(StringReader(response.body.readAllBytes().toString(StandardCharsets.UTF_8)))
-            PomWithReleaseDate(pom, getReleasedAt(response).toJavaInstant())
+            PomWithReleaseDate(MavenPom(pom), getReleasedAt(response).toJavaInstant())
         }
     }
 
@@ -80,13 +79,10 @@ abstract class BaseMavenStaticDataProvider(
 
 
         return executeFetch(kotlinToolingMetadataUrl) { response ->
-            when (val parseResult =
-                KotlinToolingMetadata.parseJson(
-                    String(
-                        response.body.readAllBytes(),
-                        StandardCharsets.UTF_8
-                    )
-                )) {
+            val body = String(response.body.readAllBytes(), StandardCharsets.UTF_8)
+            if (body.isBlank() || body.trim() == "\"\"") return@executeFetch null
+
+            when (val parseResult = KotlinToolingMetadata.parseJson(body)) {
                 is KotlinToolingMetadataParsingResult.Failure -> throw IllegalArgumentException(parseResult.reason)
                 is KotlinToolingMetadataParsingResult.Success -> KotlinToolingMetadataDelegateImpl(validate(parseResult.value))
             }
@@ -141,7 +137,16 @@ abstract class BaseMavenStaticDataProvider(
         }
     }
 
-    protected abstract fun parseReleasedAt(value: String): Instant
+    protected open fun parseReleasedAt(value: Map<String, String>): Instant {
+        val lastModified = value.entries.firstOrNull { it.key.equals("last-modified", ignoreCase = true) }?.value
+            ?: throw IllegalStateException("Missing release date header: expected last-modified")
+
+        return try {
+            parseRfc1123Instant(lastModified)
+        } catch (e: Exception) {
+            throw IllegalStateException("Invalid release date format: $lastModified", e)
+        }
+    }
 
     protected fun <T> executeWithThrottle(body: () -> T): T {
         try {
@@ -155,14 +160,7 @@ abstract class BaseMavenStaticDataProvider(
     }
 
     protected fun getReleasedAt(response: Transport.Response): Instant {
-        val lastModified = response.getHeaderValue(lastModifiedHeader)
-            ?: throw IllegalStateException("Missing release date header: expected $lastModifiedHeader")
-
-        return try {
-            parseReleasedAt(lastModified)
-        } catch (e: Exception) {
-            throw IllegalStateException("Invalid release date format: $lastModified", e)
-        }
+        return parseReleasedAt(response.headers)
     }
 
     protected fun parseRfc1123Instant(value: String): Instant {
@@ -261,9 +259,6 @@ abstract class BaseMavenStaticDataProvider(
         return metadata
     }
 
-    private fun Transport.Response.getHeaderValue(headerName: String): String? {
-        return headers.entries.firstOrNull { it.key.equals(headerName, ignoreCase = true) }?.value
-    }
 
     private fun applyRequestCooldown(response: Transport.Response, serviceUri: String): Nothing {
         logger.warn("Rate limited by Maven Central, retrying after ${response.headers["Retry-After"]}")

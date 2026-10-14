@@ -1,0 +1,187 @@
+databaseChangeLog:
+  - changeSet:
+      id: create rejected_maven_coordinate table
+      author: dmitrii.krasnov@jetbrains.com
+      preConditions:
+        - onFail: MARK_RAN
+        - not:
+            tableExists:
+              tableName: rejected_maven_coordinate
+      changes:
+        - createTable:
+            tableName: rejected_maven_coordinate
+            columns:
+              - column:
+                  name: id
+                  type: BIGINT
+                  constraints:
+                    nullable: false
+                    primaryKey: true
+                    primaryKeyName: pk_rejected_maven_coordinate
+              - column:
+                  name: maven_artifact_id
+                  type: BIGINT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: release_ts
+                  type: TIMESTAMP
+                  constraints:
+                    nullable: false
+              - column:
+                  name: scraper_type
+                  type: TEXT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMP
+                  defaultValueComputed: CURRENT_TIMESTAMP
+                  constraints:
+                    nullable: false
+              - column:
+                  name: scm_url
+                  type: TEXT
+
+  - changeSet:
+      id: add unique index on rejected_maven_coordinate maven_artifact_id
+      author: dmitrii.krasnov@jetbrains.com
+      preConditions:
+        - onFail: MARK_RAN
+        - not:
+            indexExists:
+              tableName: rejected_maven_coordinate
+              indexName: uindex_rejected_maven_coordinate_maven_artifact_id
+      changes:
+        - createIndex:
+            tableName: rejected_maven_coordinate
+            indexName: uindex_rejected_maven_coordinate_maven_artifact_id
+            unique: true
+            columns:
+              - column:
+                  name: maven_artifact_id
+
+  - changeSet:
+      id: create rejected_maven_coordinate sequence
+      author: dmitrii.krasnov@jetbrains.com
+      preConditions:
+        - onFail: MARK_RAN
+        - not:
+            sequenceExists:
+              sequenceName: rejected_maven_coordinate_id_seq
+      changes:
+        - sql:
+            sql: |
+              CREATE SEQUENCE rejected_maven_coordinate_id_seq
+                  AS BIGINT
+                  INCREMENT BY 50
+                  START WITH 1;
+
+  - changeSet:
+      id: add rejected_maven_coordinate.maven_artifact_id foreign key
+      author: dmitrii.krasnov@jetbrains.com
+      preConditions:
+        - onFail: MARK_RAN
+        - not:
+            foreignKeyConstraintExists:
+              foreignKeyName: fk_rejected_maven_coordinate_maven_artifact_id
+      changes:
+        - addForeignKeyConstraint:
+            constraintName: fk_rejected_maven_coordinate_maven_artifact_id
+            baseTableName: rejected_maven_coordinate
+            baseColumnNames: maven_artifact_id
+            referencedTableName: maven_artifact
+            referencedColumnNames: id
+
+  - changeSet:
+      id: reset tooling metadata package index request failures
+      author: dmitrii.krasnov@jetbrains.com
+      preConditions:
+        - onFail: MARK_RAN
+        - tableExists:
+            tableName: package_index_request
+        - columnExists:
+            tableName: package_index_request
+            columnName: status
+        - columnExists:
+            tableName: package_index_request
+            columnName: failed_attempts
+        - columnExists:
+            tableName: package_index_request
+            columnName: failed_ts
+        - columnExists:
+            tableName: package_index_request
+            columnName: last_error_message
+      changes:
+        - sql:
+            sql: |
+              UPDATE package_index_request
+              SET status = 'PENDING',
+                  failed_attempts = 0,
+                  failed_ts = NULL,
+                  last_error_message = NULL,
+                  scraper_type = 'GOOGLE_MAVEN_CENTRAL_MIRROR'
+              WHERE last_error_message LIKE 'Unable to find tooling metadata for %';
+
+  - changeSet:
+      id: add rejected_maven_coordinate error type
+      author: dmitrii.krasnov@jetbrains.com
+      preConditions:
+        - onFail: MARK_RAN
+        - not:
+            columnExists:
+              tableName: rejected_maven_coordinate
+              columnName: error_type
+      changes:
+        - addColumn:
+            tableName: rejected_maven_coordinate
+            columns:
+              - column:
+                  name: error_type
+                  type: TEXT
+        - update:
+            tableName: rejected_maven_coordinate
+            columns:
+              - column:
+                  name: error_type
+                  value: MISSING_TOOLING_METADATA
+        - addNotNullConstraint:
+            tableName: rejected_maven_coordinate
+            columnName: error_type
+            columnDataType: TEXT
+
+  - changeSet:
+      id: delete release ts column from rejected_maven_coordinate
+      author: dmitrii.krasnov@jetbrains.com
+      changes:
+        - dropColumn:
+            tableName: rejected_maven_coordinate
+            columnName: release_ts
+
+  - changeSet:
+      id: reset all tooling metadata package index request
+      author: dmitrii.krasnov@jetbrains.com
+      preConditions:
+        - onFail: MARK_RAN
+        - tableExists:
+            tableName: package_index_request
+        - columnExists:
+            tableName: package_index_request
+            columnName: status
+        - columnExists:
+            tableName: package_index_request
+            columnName: failed_attempts
+        - columnExists:
+            tableName: package_index_request
+            columnName: failed_ts
+        - columnExists:
+            tableName: package_index_request
+            columnName: last_error_message
+      changes:
+        - sql:
+            sql: |
+              UPDATE package_index_request
+              SET status = 'PENDING',
+                  failed_attempts = 0,
+                  scraper_type = 'GOOGLE_MAVEN_CENTRAL_MIRROR'
+              WHERE status = 'PENDING';

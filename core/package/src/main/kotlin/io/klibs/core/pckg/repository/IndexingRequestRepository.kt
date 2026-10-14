@@ -8,10 +8,11 @@ import org.springframework.data.repository.CrudRepository
 import org.springframework.data.repository.query.Param
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
+import java.time.Instant
 
 interface IndexingRequestRepository : CrudRepository<IndexingRequestEntity, Long> {
 
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     @Query(value = """
         UPDATE package_index_request
         SET status = :#{#newStatus.name()}
@@ -25,13 +26,8 @@ interface IndexingRequestRepository : CrudRepository<IndexingRequestEntity, Long
         FROM package_index_request req
         WHERE req.status = 'PENDING'
           AND req.failed_attempts < :maxAttempts
-          AND NOT EXISTS (
-              SELECT 1
-              FROM banned_packages bp
-              WHERE bp.group_id = req.group_id 
-                AND (bp.artifact_id = req.artifact_id OR bp.artifact_id IS NULL)
-          )
-        ORDER BY req.released_ts DESC NULLS FIRST
+          AND req.next_attempt_ts < current_timestamp
+        ORDER BY req.next_attempt_ts
         LIMIT 1
     """, nativeQuery = true)
     fun findFirstForIndexing(@Param("maxAttempts") maxAttempts: Int): IndexingRequestEntity?
@@ -40,33 +36,32 @@ interface IndexingRequestRepository : CrudRepository<IndexingRequestEntity, Long
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     @Query(value = """
         UPDATE package_index_request
-        SET status = 'PENDING',
+        SET status = CASE WHEN failed_attempts + 1 >= :maxAttempts
+                      THEN 'FAILED' ELSE 'PENDING' END,
             failed_ts = current_timestamp,
             failed_attempts = failed_attempts + 1,
-            last_error_message = :errorMessage
+            last_error_message = :errorMessage,
+            next_attempt_ts = COALESCE(:nextAttemptTs, 'infinity'::timestamptz)
         WHERE id = :id
     """, nativeQuery = true)
-    fun markAsFailed(@Param("id") id: Long, @Param("errorMessage") errorMessage: String?)
+    fun markAsFailed(@Param("id") id: Long, @Param("maxAttempts") maxAttempts: Int,@Param("nextAttemptTs") nextAttemptTs: Instant?, @Param("errorMessage") errorMessage: String?)
 
-    @Modifying
-    @Transactional
-    @Query(value = """
-        DELETE
-        FROM package_index_request req
-        WHERE req.reindex = false
-          AND EXISTS (
-              SELECT true
-              FROM package p
-              WHERE req.group_id = p.group_id
-                AND req.artifact_id = p.artifact_id
-                AND req.version = p.version
-          )
-    """, nativeQuery = true)
-    fun removeRepeating(): Int
+    fun countByStatus(status: IndexingRequestStatus): Long
 
     fun findByGroupIdAndArtifactIdAndVersion(
         groupId: String,
         artifactId: String,
         version: String
     ): IndexingRequestEntity?
+
+    fun findAllByGroupIdAndArtifactId(
+        groupId: String,
+        artifactId: String
+    ): List<IndexingRequestEntity>
+
+    fun findAllByGroupIdAndArtifactIdAndVersion(
+        groupId: String,
+        artifactId: String,
+        version: String
+    ): List<IndexingRequestEntity>
 }

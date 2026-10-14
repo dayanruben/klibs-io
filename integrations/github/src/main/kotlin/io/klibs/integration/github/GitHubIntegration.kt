@@ -15,9 +15,13 @@ interface GitHubIntegration {
 
     fun getRepository(owner: String, name: String): GitHubRepository?
 
+    fun getForkParentFullName(owner: String, name: String): String?
+
     fun getArchivedAt(owner: String, name: String): Instant?
 
     fun getUser(login: String): GitHubUser?
+
+    fun getUser(nativeId: Long): GitHubUser?
 
     fun getLicense(repositoryId: Long): GitHubLicense?
 
