@@ -24,7 +24,7 @@
   },
   "dependencies": {
     "@jetbrains/kotlin-web-site-ui": "^4.14.2",
-    "@next/third-parties": "^14.2.9",
+    "@next/third-parties": "^16.4.3",
     "@rescui/button": "^0.16.4",
     "@rescui/card": "^0.10.8",
     "@rescui/checkbox": "^0.8.4",
@@ -46,12 +46,12 @@
     "classnames": "^2.5.1",
     "date-fns": "^4.0.0-beta.1",
     "github-markdown-css": "^5.8.1",
-    "next": "^14.2.12",
+    "next": "^16.4.3",
     "react": "^18",
     "react-bootstrap": "^2.10.4",
     "react-dom": "^18",
     "react-remove-scroll-bar": "^2.3.8",
-    "sharp": "^0.33.5",
+    "sharp": "^0.35.5",
     "shiki": "^4.3.0"
   },
   "devDependencies": {
@@ -68,7 +68,7 @@
     "eslint-config-next": "14.2.9",
     "jsdom": "^25.0.1",
     "typescript": "^5",
-    "vite": "^8.2.2",
+    "vite": "^8.3.5",
     "vitest": "^4.1.11",
     "vitest-browser-react": "^2.2.0"
   },
