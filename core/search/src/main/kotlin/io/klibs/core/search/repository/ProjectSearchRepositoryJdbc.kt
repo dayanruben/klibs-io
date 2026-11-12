@@ -1,7 +1,6 @@
 package io.klibs.core.search.repository
 
 import io.klibs.core.owner.ScmOwnerType
-import io.klibs.core.pckg.model.PackagePlatform
 import io.klibs.core.pckg.model.TargetGroup
 import io.klibs.core.pckg.util.getTargetsVector
 import io.klibs.core.search.controller.SearchSort
@@ -23,7 +22,6 @@ class ProjectSearchRepositoryJdbc(
      */
     override fun find(
         rawQuery: String?,
-        platforms: List<PackagePlatform>,
         targetGroupFilters: List<Map<TargetGroup, Set<String>>>,
         ownerLogin: String?,
         sortBy: SearchSort,
@@ -54,7 +52,8 @@ class ProjectSearchRepositoryJdbc(
 
         val sql = buildString {
             append("SELECT project_id, owner_type, owner_login, repo_name, name, stars, license_name, latest_version")
-            append(", latest_version_ts, array_to_string(platforms, ',') AS platforms, plain_description, tags, markers, dependent_count, health_score")
+            append(", latest_version_ts, plain_description, tags, markers, dependent_count, health_score")
+            append(", dates.created_ts, dates.last_activity_ts")
 
             // For debugging and testing purposes
             append(", targets_vector")
@@ -67,6 +66,7 @@ class ProjectSearchRepositoryJdbc(
                 )
             }
             appendLine(" FROM project_index")
+            appendLine(projectDatesJoin("project_index"))
 
             var prefix = "WHERE"
 
@@ -75,13 +75,6 @@ class ProjectSearchRepositoryJdbc(
                 appendLine(
                     " WHERE (:wildcardQueryWithSpecialSymbols ::tsquery || wildcardQueryWithoutSpecialSymbols || :exactMatchWildcardQuery ::tsquery) @@ fts"
                 )
-                prefix = "AND"
-            }
-
-            if (platforms.isNotEmpty()) {
-                val platformsQuery = platforms.distinct().joinToString(separator = " & ") { it.name }
-                appendLine(" $prefix platforms_vector @@ '$platformsQuery'")
-
                 prefix = "AND"
             }
 
@@ -202,8 +195,8 @@ class ProjectSearchRepositoryJdbc(
             SELECT c.id AS category_id, c.name AS category_name, c.markers AS category_markers,
                    pi.project_id, pi.owner_type, pi.owner_login, pi.repo_name, pi.name,
                    pi.stars, pi.license_name, pi.latest_version, pi.latest_version_ts,
-                   array_to_string(pi.platforms, ',') AS platforms,
-                   pi.plain_description, pi.tags, pi.markers, pi.targets_vector, pi.dependent_count, pi.health_score
+                   pi.plain_description, pi.tags, pi.markers, pi.targets_vector, pi.dependent_count, pi.health_score,
+                   dates.created_ts, dates.last_activity_ts
             FROM category c
             LEFT JOIN LATERAL (
                 SELECT * FROM project_index
@@ -211,6 +204,7 @@ class ProjectSearchRepositoryJdbc(
                 ORDER BY stars DESC, project_id
                 LIMIT :limit
             ) pi ON true
+            LEFT ${projectDatesJoin("pi")}
             ORDER BY c.id, pi.stars DESC NULLS LAST, pi.project_id NULLS LAST
         """.trimIndent()
 
@@ -243,6 +237,16 @@ class ProjectSearchRepositoryJdbc(
     }
 
     private companion object {
+        private fun projectDatesJoin(indexAlias: String) = """
+            JOIN LATERAL (
+                SELECT repo.created_ts,
+                       CASE WHEN $indexAlias.owner_login = 'androidx' THEN $indexAlias.latest_version_ts
+                            ELSE repo.last_activity_ts END AS last_activity_ts
+                FROM project p JOIN scm_repo repo ON repo.id = p.scm_repo_id
+                WHERE p.id = $indexAlias.project_id
+            ) dates ON true
+        """.trimIndent()
+
         private val PROJECT_OVERVIEW_ROW_MAPPER = RowMapper<SearchProjectResult> { rs, _ ->
             SearchProjectResult(
                 id = rs.getInt("project_id"),
@@ -255,10 +259,8 @@ class ProjectSearchRepositoryJdbc(
                 licenseName = rs.getString("license_name"),
                 latestVersion = rs.getString("latest_version"),
                 latestVersionPublishedAt = rs.getTimestamp("latest_version_ts").toInstant(),
-                platforms = rs.getString("platforms")
-                    .let {
-                        if (it.isNullOrEmpty()) emptyList() else it.split(",").map { p -> PackagePlatform.valueOf(p) }
-                    },
+                createdAt = rs.getTimestamp("created_ts").toInstant(),
+                lastActivityAt = rs.getTimestamp("last_activity_ts").toInstant(),
                 markers = rs.getArray("markers")?.array?.let { it as? Array<*> }?.map { it.toString() } ?: emptyList(),
                 targets = rs.getTargetsVector("targets_vector"),
                 tags = rs.getArray("tags")?.array?.let { it as? Array<*> }?.map { it.toString() } ?: emptyList(),

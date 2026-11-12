@@ -10,19 +10,18 @@ import io.klibs.integration.mcp.dto.service.McpProjectSearchResultDto
 import io.klibs.integration.mcp.mapper.McpToolMapper
 import io.klibs.integration.mcp.service.McpProjectSearchService
 import io.klibs.integration.mcp.tool.McpProjectSearchTool
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.verify
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
-import org.mockito.kotlin.mock
-import org.mockito.kotlin.never
-import org.mockito.kotlin.verify
-import org.mockito.kotlin.whenever
 import java.time.Instant
 
 class McpProjectSearchToolTest {
 
-    private val mcpProjectSearchService = mock<McpProjectSearchService>()
+    private val mcpProjectSearchService = mockk<McpProjectSearchService>()
     private val mcpToolMapper = McpToolMapper()
     private val uut = McpProjectSearchTool(mcpProjectSearchService, mcpToolMapper)
 
@@ -31,26 +30,25 @@ class McpProjectSearchToolTest {
         val serviceResponse = McpProjectSearchResultDto(projects = emptyList())
         val targetFilters = listOf(mapOf(TargetGroup.JVM to setOf("11", "17")))
 
-        whenever(
+        every {
             mcpProjectSearchService.mcpProjectSearch(
                 query = "kotlin",
-                platforms = listOf(PackagePlatform.JVM, PackagePlatform.NATIVE),
                 targetFilters = targetFilters,
             )
-        ).thenReturn(serviceResponse)
+        } returns serviceResponse
 
         val result = uut.searchProjects(
             query = "kotlin",
-            platforms = listOf("jvm", "native"),
             targetGroupFilters = targetFilters,
         )
 
         assertTrue(result.projects.isEmpty())
-        verify(mcpProjectSearchService).mcpProjectSearch(
-            query = "kotlin",
-            platforms = listOf(PackagePlatform.JVM, PackagePlatform.NATIVE),
-            targetFilters = targetFilters,
-        )
+        verify(exactly = 1) {
+            mcpProjectSearchService.mcpProjectSearch(
+                query = "kotlin",
+                targetFilters = targetFilters,
+            )
+        }
     }
 
     @Test
@@ -58,15 +56,16 @@ class McpProjectSearchToolTest {
         val filters = listOf(mapOf(TargetGroup.Unknown to emptySet<String>()))
 
         assertThrows(IllegalArgumentException::class.java) {
-            uut.searchProjects(query = "kotlin", platforms = emptyList(), targetGroupFilters = filters)
+            uut.searchProjects(query = "kotlin", targetGroupFilters = filters)
         }
 
-        verify(mcpProjectSearchService, never()).mcpProjectSearch(
-            query = org.mockito.kotlin.any(),
-            platforms = org.mockito.kotlin.any(),
-            targetFilters = org.mockito.kotlin.any(),
-            maxPackagesPerProject = org.mockito.kotlin.any(),
-        )
+        verify(exactly = 0) {
+            mcpProjectSearchService.mcpProjectSearch(
+                query = any(),
+                targetFilters = any(),
+                maxPackagesPerProject = any(),
+            )
+        }
     }
 
     @Test
@@ -91,16 +90,16 @@ class McpProjectSearchToolTest {
             )
         )
 
-        whenever(mcpProjectSearchService.mcpProjectSearch(query = "state machine", platforms = emptyList(), targetFilters = emptyList()))
-            .thenReturn(serviceResponse)
+        every {
+            mcpProjectSearchService.mcpProjectSearch(query = "state machine", targetFilters = emptyList())
+        } returns serviceResponse
 
-        val result = uut.searchProjects(query = "state machine", platforms = emptyList(), targetGroupFilters = emptyList())
+        val result = uut.searchProjects(query = "state machine", targetGroupFilters = emptyList())
 
         val mappedProject = result.projects.single()
         assertEquals("kstatemachine", mappedProject.projectName)
         assertEquals("KStateMachine", mappedProject.projectAuthor)
         assertEquals("Test project", mappedProject.description)
-        assertEquals(listOf("common"), mappedProject.platforms)
         assertEquals(emptyList<String>(), mappedProject.targets)
         assertEquals(1, mappedProject.totalPackages)
 
@@ -123,7 +122,8 @@ class McpProjectSearchToolTest {
         licenseName = "Apache-2.0",
         latestVersion = "0.32.0-alpha",
         latestVersionPublishedAt = Instant.now(),
-        platforms = listOf(PackagePlatform.COMMON),
+        createdAt = Instant.EPOCH,
+        lastActivityAt = Instant.EPOCH,
         targets = emptyList(),
         tags = emptyList(),
         markers = emptyList()

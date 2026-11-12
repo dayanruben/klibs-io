@@ -1,7 +1,9 @@
 package io.klibs.app.service
 
 import BaseUnitWithDbLayerTest
-import io.klibs.app.api.KeepSuspiciousCandidateRequest
+import io.klibs.app.api.ReviewSuspiciousCandidateDecision
+import io.klibs.app.api.ReviewSuspiciousCandidatesRequest
+import io.klibs.app.api.SuspiciousCandidateDecision
 import io.klibs.app.service.SuspiciousCandidateReviewService.Companion.METRIC_SUSPICIOUS_PACKAGE_CANDIDATE_PENDING
 import io.klibs.core.pckg.entity.SuspiciousPackageCandidateEntity
 import io.klibs.core.pckg.entity.SuspiciousPackageCandidateKey
@@ -9,9 +11,9 @@ import io.klibs.core.pckg.enums.CandidateStatus
 import io.klibs.core.pckg.repository.SuspiciousPackageCandidateRepository
 import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
+import io.mockk.every
+import io.mockk.mockk
 import org.junit.jupiter.api.Test
-import org.mockito.kotlin.mock
-import org.mockito.kotlin.whenever
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.test.context.ActiveProfiles
@@ -82,18 +84,27 @@ class SuspiciousCandidateReviewServiceTest : BaseUnitWithDbLayerTest() {
         val pendingGauge = assertNotNull(meterRegistry.find(METRIC_SUSPICIOUS_PACKAGE_CANDIDATE_PENDING).gauge())
         assertEquals(2.0, pendingGauge.value())
 
-        uut.keep(KeepSuspiciousCandidateRequest(50001, "io.github.suspect", "legit relocation"))
+        uut.review(
+            ReviewSuspiciousCandidatesRequest(
+                listOf(
+                    ReviewSuspiciousCandidateDecision(
+                        50001, "io.github.suspect", SuspiciousCandidateDecision.KEEP,
+                        listOf("loader", "runtime"), "legit relocation"
+                    )
+                )
+            )
+        )
 
         assertEquals(0.0, pendingGauge.value())
     }
 
     @Test
     fun `pending gauge is NaN when the count query fails`() {
-        val failingRepo = mock<SuspiciousPackageCandidateRepository> {
-            whenever(it.countByStatus(CandidateStatus.PENDING)).thenThrow(RuntimeException("DB error"))
+        val failingRepo = mockk<SuspiciousPackageCandidateRepository> {
+            every { countByStatus(CandidateStatus.PENDING) } throws RuntimeException("DB error")
         }
         val registry = SimpleMeterRegistry()
-        SuspiciousCandidateReviewService(failingRepo, mock(), registry)
+        SuspiciousCandidateReviewService(failingRepo, mockk(), mockk(), registry)
 
         assertTrue(registry.get(METRIC_SUSPICIOUS_PACKAGE_CANDIDATE_PENDING).gauge().value().isNaN())
     }

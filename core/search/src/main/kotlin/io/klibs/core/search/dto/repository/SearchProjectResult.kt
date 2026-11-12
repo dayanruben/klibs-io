@@ -1,7 +1,6 @@
 package io.klibs.core.search.dto.repository
 
 import io.klibs.core.owner.ScmOwnerType
-import io.klibs.core.pckg.model.PackagePlatform
 import java.time.Instant
 
 data class SearchProjectResult(
@@ -19,8 +18,9 @@ data class SearchProjectResult(
 
     val latestVersion: String,
     val latestVersionPublishedAt: Instant,
+    val createdAt: Instant,
+    val lastActivityAt: Instant,
 
-    val platforms: List<PackagePlatform>,
     val targets: List<String> = emptyList(),
 
     val tags: List<String>,
